@@ -6,25 +6,57 @@
   <title>Photo Resizer by Max KB</title>
   <style>
     body { font-family: sans-serif; max-width: 600px; margin: 2rem auto; }
-    input, button { margin-top: .5rem; width: 100%; padding: .5rem; }
-    img { max-width: 100%; margin-top: 1rem; }
+    label, button { display: block; margin-top: .75rem; }
+    input, button, progress { width: 100%; padding: .5rem; box-sizing: border-box; }
+    #advancedControls { margin-top: 1rem; padding: 1rem; border: 1px solid #ccc; border-radius: 4px; display: none; }
+    #advancedControls label { margin: .5rem 0; }
+    #output { margin-top: 1.5rem; }
+    img { max-width: 100%; display: block; margin-top: 1rem; }
+    #progressContainer { margin-top: 1rem; display: none; }
+    #progressText { text-align: center; margin-top: .25rem; font-size: .9rem; color: #555; }
   </style>
 </head>
 <body>
-  <h1>Resize &amp; Compress to Max KB</h1>
+  <h1>Resize & Compress to Max KB</h1>
+
   <label>
     Select Image:
     <input type="file" id="fileInput" accept="image/*" />
   </label>
+
   <label>
     Max Size (KB):
     <input type="number" id="sizeInput" value="200" min="10" />
   </label>
-  <button id="goBtn">Resize &amp; Download</button>
+
+  <label>
+    <input type="checkbox" id="advancedChk" />
+    Show Advanced Controls
+  </label>
+
+  <div id="advancedControls">
+    <label>
+      Quality: <span id="qualityVal">0.92</span>
+      <input type="range" id="qualityInput" min="0.10" max="1.00" step="0.01" value="0.92" />
+    </label>
+    <label>
+      Scale (%): <span id="scaleVal">100%</span>
+      <input type="range" id="scaleInput" min="10" max="100" step="1" value="100" />
+    </label>
+  </div>
+
+  <button id="goBtn">Resize & Download</button>
+
+  <div id="progressContainer">
+    <progress id="progressBar" value="0" max="100"></progress>
+    <div id="progressText">0%</div>
+  </div>
+
   <div id="output"></div>
 
   <script>
-    async function fileToImage(file) {
+    // Helpers
+    function fileToImage(file) {
       return new Promise((res, rej) => {
         const img = new Image();
         img.onload = () => res(img);
@@ -32,56 +64,129 @@
         img.src = URL.createObjectURL(file);
       });
     }
-
-    async function canvasToBlob(canvas, mime, quality) {
+    function canvasToBlob(canvas, mime, quality) {
       return new Promise(res => canvas.toBlob(res, mime, quality));
     }
 
-    document.getElementById('goBtn').onclick = async () => {
+    // DOM refs
+    const advChk = document.getElementById('advancedChk');
+    const advPanel = document.getElementById('advancedControls');
+    const qIn = document.getElementById('qualityInput');
+    const qVal = document.getElementById('qualityVal');
+    const sIn = document.getElementById('scaleInput');
+    const sVal = document.getElementById('scaleVal');
+    const goBtn = document.getElementById('goBtn');
+    const output = document.getElementById('output');
+    const progCont = document.getElementById('progressContainer');
+    const progBar = document.getElementById('progressBar');
+    const progText = document.getElementById('progressText');
+
+    // Show/hide advanced
+    advChk.addEventListener('change', () => {
+      advPanel.style.display = advChk.checked ? 'block' : 'none';
+    });
+    qIn.addEventListener('input', () => qVal.textContent = qIn.value);
+    sIn.addEventListener('input', () => sVal.textContent = sIn.value + '%');
+
+    let imgGlobal, canvas, ctx, lastLink, lastPreview;
+
+    async function render(quality, scalePercent) {
+      const scale = scalePercent / 100;
+      const w = Math.round(imgGlobal.width * scale);
+      const h = Math.round(imgGlobal.height * scale);
+      canvas.width = w; canvas.height = h;
+      ctx.clearRect(0, 0, w, h);
+      ctx.drawImage(imgGlobal, 0, 0, w, h);
+      const blob = await canvasToBlob(canvas, 'image/jpeg', quality);
+      const kb = Math.round(blob.size / 1024);
+
+      // update output
+      const url = URL.createObjectURL(blob);
+      if (lastLink) lastLink.remove();
+      if (lastPreview) lastPreview.remove();
+
+      lastLink = document.createElement('a');
+      lastLink.href = url;
+      lastLink.download = `resized-${Date.now()}.jpg`;
+      lastLink.textContent = `✅ Download (${kb} KB)`;
+      output.appendChild(lastLink);
+
+      lastPreview = document.createElement('img');
+      lastPreview.src = url;
+      output.appendChild(lastPreview);
+    }
+
+    goBtn.addEventListener('click', async () => {
       const file = document.getElementById('fileInput').files[0];
       const maxKB = parseInt(document.getElementById('sizeInput').value, 10);
       if (!file || !maxKB) return alert('Select file and max size!');
 
-      const img = await fileToImage(file);
-      let [w, h] = [img.width, img.height];
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      canvas.width = w; canvas.height = h;
+      imgGlobal = await fileToImage(file);
+      canvas = document.createElement('canvas');
+      ctx = canvas.getContext('2d');
+      output.innerHTML = '';
+      progCont.style.display = 'block';
+      progBar.value = 0;
+      progText.textContent = '0%';
 
-      let quality = 0.92;
-      let blob = null;
+      if (!advChk.checked) {
+        // auto-shrink with progress
+        let quality = parseFloat(qIn.value);
+        let w = imgGlobal.width, h = imgGlobal.height, blob;
+        const maxQualitySteps = 20, maxDimSteps = 20;
+        let step = 0, totalSteps = maxQualitySteps + maxDimSteps;
 
-      // try reducing quality first
-      do {
-        ctx.clearRect(0,0,w,h);
-        ctx.drawImage(img, 0, 0, w, h);
-        blob = await canvasToBlob(canvas, 'image/jpeg', quality);
-        if (blob.size / 1024 <= maxKB) break;
-        quality *= 0.9;
-      } while (quality > 0.1);
+        // quality loop
+        for (let i = 0; i < maxQualitySteps; i++) {
+          ctx.drawImage(imgGlobal, 0, 0, w, h);
+          blob = await canvasToBlob(canvas, 'image/jpeg', quality);
+          step++;
+          progBar.value = Math.round(step / totalSteps * 100);
+          progText.textContent = progBar.value + '%';
+          if (blob.size / 1024 <= maxKB) break;
+          quality *= 0.9;
+        }
 
-      // if still too big, downscale dimensions
-      while (blob.size / 1024 > maxKB) {
-        w *= 0.9; h *= 0.9;
-        canvas.width = w; canvas.height = h;
-        ctx.clearRect(0,0,w,h);
-        ctx.drawImage(img, 0, 0, w, h);
-        blob = await canvasToBlob(canvas, 'image/jpeg', quality);
+        // dimension loop
+        while (blob.size / 1024 > maxKB) {
+          w = Math.round(w * 0.9);
+          h = Math.round(h * 0.9);
+          canvas.width = w; canvas.height = h;
+          ctx.drawImage(imgGlobal, 0, 0, w, h);
+          blob = await canvasToBlob(canvas, 'image/jpeg', quality);
+          step++;
+          progBar.value = Math.min(Math.round(step / totalSteps * 100), 100);
+          progText.textContent = progBar.value + '%';
+        }
+
+        // done
+        progBar.value = 100;
+        progText.textContent = '100%';
+        progCont.style.display = 'none';
+
+        // show result
+        const url = URL.createObjectURL(blob);
+        lastLink = document.createElement('a');
+        lastLink.href = url;
+        lastLink.download = `resized-${file.name.replace(/\.[^/.]+$/, '')}.jpg`;
+        lastLink.textContent = `✅ Download (${Math.round(blob.size/1024)} KB)`;
+        output.appendChild(lastLink);
+
+        lastPreview = document.createElement('img');
+        lastPreview.src = url;
+        output.appendChild(lastPreview);
+
+      } else {
+        // advanced: initial render, then dynamic
+        await render(parseFloat(qIn.value), parseInt(sIn.value, 10));
+        progCont.style.display = 'none';
+        [qIn, sIn].forEach(el =>
+          el.addEventListener('input', () =>
+            render(parseFloat(qIn.value), parseInt(sIn.value, 10))
+          )
+        );
       }
-
-      // create download link
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `resized-${file.name.replace(/\.[^/.]+$/, '')}.jpg`;
-      link.textContent = `✅ Download (${Math.round(blob.size/1024)} KB)`;
-      const out = document.getElementById('output');
-      out.innerHTML = '';
-      out.appendChild(link);
-      const preview = document.createElement('img');
-      preview.src = url;
-      out.appendChild(preview);
-    };
+    });
   </script>
 </body>
 </html>

@@ -7,7 +7,7 @@
   <style>
     body { font-family: sans-serif; max-width: 600px; margin: 2rem auto; }
     label, button { display: block; margin-top: .75rem; }
-    input, button, progress { width: 100%; padding: .5rem; box-sizing: border-box; }
+    input, button, select, progress { width: 100%; padding: .5rem; box-sizing: border-box; }
     #advancedControls { margin-top: 1rem; padding: 1rem; border: 1px solid #ccc; border-radius: 4px; display: none; }
     #advancedControls label { margin: .5rem 0; }
     #expectedSize { margin-top: .5rem; font-size: .9rem; color: #333; }
@@ -15,6 +15,7 @@
     img { max-width: 100%; display: block; margin-top: 1rem; }
     #progressContainer { margin-top: 1rem; display: none; }
     #progressText { text-align: center; margin-top: .25rem; font-size: .9rem; color: #555; }
+    .dim-inputs { display: none; }
   </style>
 </head>
 <body>
@@ -37,12 +38,26 @@
 
   <div id="advancedControls">
     <label>
-      Quality: <span id="qualityVal">0.92</span>
-      <input type="range" id="qualityInput" min="0.10" max="1.00" step="0.01" value="0.92" disabled />
+      <input type="radio" name="mode" value="scale" checked /> Scale (%)
+      <input type="range" id="scaleInput" min="10" max="100" step="1" value="100" />
+      <span id="scaleVal">100%</span>
     </label>
     <label>
-      Scale (%): <span id="scaleVal">100%</span>
-      <input type="range" id="scaleInput" min="10" max="100" step="1" value="100" disabled />
+      <input type="radio" name="mode" value="custom" /> Custom Width x Height
+    </label>
+    <div class="dim-inputs" id="dimInputs">
+      <label>
+        Width (px):
+        <input type="number" id="widthInput" min="1" />
+      </label>
+      <label>
+        Height (px):
+        <input type="number" id="heightInput" min="1" />
+      </label>
+    </div>
+    <label>
+      Quality: <span id="qualityVal">0.92</span>
+      <input type="range" id="qualityInput" min="0.10" max="1.00" step="0.01" value="0.92" />
     </label>
     <div id="expectedSize">Expected size: — KB</div>
   </div>
@@ -73,10 +88,14 @@
     // DOM refs
     const advancedChk = document.getElementById('advancedChk');
     const advPanel     = document.getElementById('advancedControls');
-    const qInput       = document.getElementById('qualityInput');
-    const qValue       = document.getElementById('qualityVal');
-    const sInput       = document.getElementById('scaleInput');
-    const sValue       = document.getElementById('scaleVal');
+    const modeInputs   = document.getElementsByName('mode');
+    const scaleInput   = document.getElementById('scaleInput');
+    const scaleVal     = document.getElementById('scaleVal');
+    const dimInputs    = document.getElementById('dimInputs');
+    const widthInput   = document.getElementById('widthInput');
+    const heightInput  = document.getElementById('heightInput');
+    const qualityInput = document.getElementById('qualityInput');
+    const qualityVal   = document.getElementById('qualityVal');
     const expectedSize = document.getElementById('expectedSize');
     const goBtn        = document.getElementById('goBtn');
     const output       = document.getElementById('output');
@@ -88,23 +107,41 @@
 
     // Show/hide advanced controls
     advancedChk.addEventListener('change', () => {
-      if (!imgEl) return advancedChk.checked = false, alert('Select an image first');
+      if (!imgEl && advancedChk.checked) {
+        advancedChk.checked = false;
+        return alert('Select an image first');
+      }
       advPanel.style.display = advancedChk.checked ? 'block' : 'none';
-      qInput.disabled = sInput.disabled = !advancedChk.checked;
       updateExpectedSize();
     });
 
-    // Sync slider displays & expected size
-    qInput.addEventListener('input', () => {
-      qValue.textContent = qInput.value;
-      updateExpectedSize();
-    });
-    sInput.addEventListener('input', () => {
-      sValue.textContent = sInput.value + '%';
-      updateExpectedSize();
+    // Mode toggle
+    modeInputs.forEach(radio => {
+      radio.addEventListener('change', () => {
+        if (radio.value === 'custom' && radio.checked) {
+          dimInputs.style.display = 'block';
+          scaleInput.disabled = true;
+        } else if (radio.value === 'scale' && radio.checked) {
+          dimInputs.style.display = 'none';
+          scaleInput.disabled = false;
+        }
+        updateExpectedSize();
+      });
     });
 
-    // Load image into memory
+    // Sync display & expected size
+    scaleInput.addEventListener('input', () => {
+      scaleVal.textContent = scaleInput.value + '%';
+      updateExpectedSize();
+    });
+    qualityInput.addEventListener('input', () => {
+      qualityVal.textContent = qualityInput.value;
+      updateExpectedSize();
+    });
+    widthInput.addEventListener('input', updateExpectedSize);
+    heightInput.addEventListener('input', updateExpectedSize);
+
+    // Load image
     document.getElementById('fileInput').addEventListener('change', async () => {
       const file = document.getElementById('fileInput').files[0];
       if (!file) return;
@@ -114,22 +151,27 @@
       expectedSize.textContent = 'Expected size: — KB';
     });
 
-    // Compute & display expected size without creating link/preview
+    // Calculate expected size
     async function updateExpectedSize() {
       if (!imgEl) return;
-      const q = parseFloat(qInput.value);
-      const scale = parseInt(sInput.value, 10) / 100;
-      const w = Math.round(imgEl.width * scale);
-      const h = Math.round(imgEl.height * scale);
+      let w, h;
+      if (document.querySelector('input[name="mode"]:checked').value === 'custom') {
+        w = parseInt(widthInput.value, 10) || imgEl.width;
+        h = parseInt(heightInput.value, 10) || imgEl.height;
+      } else {
+        const scale = parseInt(scaleInput.value, 10) / 100;
+        w = Math.round(imgEl.width * scale);
+        h = Math.round(imgEl.height * scale);
+      }
+      const q = parseFloat(qualityInput.value);
       canvas.width = w; canvas.height = h;
       ctx.clearRect(0, 0, w, h);
       ctx.drawImage(imgEl, 0, 0, w, h);
       const blob = await canvasToBlob(canvas, 'image/jpeg', q);
-      const kb   = Math.round(blob.size / 1024);
-      expectedSize.textContent = `Expected size: ${kb} KB`;
+      expectedSize.textContent = `Expected size: ${Math.round(blob.size/1024)} KB`;
     }
 
-    // Main resize on button click
+    // Main processing
     goBtn.addEventListener('click', async () => {
       const file = document.getElementById('fileInput').files[0];
       const maxKB = parseInt(document.getElementById('sizeInput').value, 10);
@@ -139,53 +181,57 @@
       progBar.value = 0;
       progText.textContent = '0%';
 
-      // Prepare image and canvas
       if (!imgEl) imgEl = await fileToImage(file);
       if (!canvas) {
         canvas = document.createElement('canvas');
         ctx = canvas.getContext('2d');
       }
 
-      let quality = parseFloat(qInput.value);
+      let quality = parseFloat(qualityInput.value);
       let w = imgEl.width, h = imgEl.height;
       let blob;
 
-      // If advanced, apply single-step final
       if (advancedChk.checked) {
-        w = Math.round(w * (parseInt(sInput.value, 10) / 100));
-        h = Math.round(h * (parseInt(sInput.value, 10) / 100));
+        // single-step with chosen settings
+        if (document.querySelector('input[name="mode"]:checked').value === 'custom') {
+          w = parseInt(widthInput.value, 10) || w;
+          h = parseInt(heightInput.value, 10) || h;
+        } else {
+          w = Math.round(w * (parseInt(scaleInput.value, 10) / 100));
+          h = Math.round(h * (parseInt(scaleInput.value, 10) / 100));
+        }
         canvas.width = w; canvas.height = h;
         ctx.clearRect(0, 0, w, h);
         ctx.drawImage(imgEl, 0, 0, w, h);
         blob = await canvasToBlob(canvas, 'image/jpeg', quality);
-        progBar.value = progText.textContent = '100%';
+        progBar.value = 100;
+        progText.textContent = '100%';
         progCont.style.display = 'none';
       } else {
-        // auto-shrink loops with progress
+        // auto-shrink with progress
         const maxQualSteps = 20, maxDimSteps = 20;
         let step = 0, total = maxQualSteps + maxDimSteps;
 
-        // quality reduction
+        // quality loop
         for (let i = 0; i < maxQualSteps; i++) {
           canvas.width = w; canvas.height = h;
           ctx.drawImage(imgEl, 0, 0, w, h);
           blob = await canvasToBlob(canvas, 'image/jpeg', quality);
           step++;
-          progBar.value = Math.round(step / total * 100);
+          progBar.value = Math.round(step/total*100);
           progText.textContent = progBar.value + '%';
-          if (blob.size / 1024 <= maxKB) break;
+          if (blob.size/1024 <= maxKB) break;
           quality *= 0.9;
         }
-
-        // dimension downscale
-        while (blob.size / 1024 > maxKB) {
-          w = Math.round(w * 0.9);
-          h = Math.round(h * 0.9);
+        // dimension loop
+        while (blob.size/1024 > maxKB) {
+          w = Math.round(w*0.9);
+          h = Math.round(h*0.9);
           canvas.width = w; canvas.height = h;
           ctx.drawImage(imgEl, 0, 0, w, h);
           blob = await canvasToBlob(canvas, 'image/jpeg', quality);
           step++;
-          progBar.value = Math.min(Math.round(step / total * 100), 100);
+          progBar.value = Math.min(Math.round(step/total*100),100);
           progText.textContent = progBar.value + '%';
         }
         progBar.value = 100;
@@ -193,7 +239,7 @@
         progCont.style.display = 'none';
       }
 
-      // show final download link & preview
+      // output
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;

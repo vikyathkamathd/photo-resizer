@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Photo Resizer by Max KB</title>
+  <style>
+    body { font-family: sans-serif; max-width: 600px; margin: 2rem auto; }
+    input, button { margin-top: .5rem; width: 100%; padding: .5rem; }
+    img { max-width: 100%; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Resize &amp; Compress to Max KB</h1>
+  <label>
+    Select Image:
+    <input type="file" id="fileInput" accept="image/*" />
+  </label>
+  <label>
+    Max Size (KB):
+    <input type="number" id="sizeInput" value="200" min="10" />
+  </label>
+  <button id="goBtn">Resize &amp; Download</button>
+  <div id="output"></div>
+
+  <script>
+    async function fileToImage(file) {
+      return new Promise((res, rej) => {
+        const img = new Image();
+        img.onload = () => res(img);
+        img.onerror = rej;
+        img.src = URL.createObjectURL(file);
+      });
+    }
+
+    async function canvasToBlob(canvas, mime, quality) {
+      return new Promise(res => canvas.toBlob(res, mime, quality));
+    }
+
+    document.getElementById('goBtn').onclick = async () => {
+      const file = document.getElementById('fileInput').files[0];
+      const maxKB = parseInt(document.getElementById('sizeInput').value, 10);
+      if (!file || !maxKB) return alert('Select file and max size!');
+
+      const img = await fileToImage(file);
+      let [w, h] = [img.width, img.height];
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      canvas.width = w; canvas.height = h;
+
+      let quality = 0.92;
+      let blob = null;
+
+      // try reducing quality first
+      do {
+        ctx.clearRect(0,0,w,h);
+        ctx.drawImage(img, 0, 0, w, h);
+        blob = await canvasToBlob(canvas, 'image/jpeg', quality);
+        if (blob.size / 1024 <= maxKB) break;
+        quality *= 0.9;
+      } while (quality > 0.1);
+
+      // if still too big, downscale dimensions
+      while (blob.size / 1024 > maxKB) {
+        w *= 0.9; h *= 0.9;
+        canvas.width = w; canvas.height = h;
+        ctx.clearRect(0,0,w,h);
+        ctx.drawImage(img, 0, 0, w, h);
+        blob = await canvasToBlob(canvas, 'image/jpeg', quality);
+      }
+
+      // create download link
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `resized-${file.name.replace(/\.[^/.]+$/, '')}.jpg`;
+      link.textContent = `✅ Download (${Math.round(blob.size/1024)} KB)`;
+      const out = document.getElementById('output');
+      out.innerHTML = '';
+      out.appendChild(link);
+      const preview = document.createElement('img');
+      preview.src = url;
+      out.appendChild(preview);
+    };
+  </script>
+</body>
+</html>

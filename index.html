@@ -10,6 +10,7 @@
     input, button, progress { width: 100%; padding: .5rem; box-sizing: border-box; }
     #advancedControls { margin-top: 1rem; padding: 1rem; border: 1px solid #ccc; border-radius: 4px; display: none; }
     #advancedControls label { margin: .5rem 0; }
+    #expectedSize { margin-top: .5rem; font-size: .9rem; color: #333; }
     #output { margin-top: 1.5rem; }
     img { max-width: 100%; display: block; margin-top: 1rem; }
     #progressContainer { margin-top: 1rem; display: none; }
@@ -37,12 +38,13 @@
   <div id="advancedControls">
     <label>
       Quality: <span id="qualityVal">0.92</span>
-      <input type="range" id="qualityInput" min="0.10" max="1.00" step="0.01" value="0.92" />
+      <input type="range" id="qualityInput" min="0.10" max="1.00" step="0.01" value="0.92" disabled />
     </label>
     <label>
       Scale (%): <span id="scaleVal">100%</span>
-      <input type="range" id="scaleInput" min="10" max="100" step="1" value="100" />
+      <input type="range" id="scaleInput" min="10" max="100" step="1" value="100" disabled />
     </label>
+    <div id="expectedSize">Expected size: — KB</div>
   </div>
 
   <button id="goBtn">Resize & Download</button>
@@ -69,123 +71,139 @@
     }
 
     // DOM refs
-    const advChk = document.getElementById('advancedChk');
-    const advPanel = document.getElementById('advancedControls');
-    const qIn = document.getElementById('qualityInput');
-    const qVal = document.getElementById('qualityVal');
-    const sIn = document.getElementById('scaleInput');
-    const sVal = document.getElementById('scaleVal');
-    const goBtn = document.getElementById('goBtn');
-    const output = document.getElementById('output');
-    const progCont = document.getElementById('progressContainer');
-    const progBar = document.getElementById('progressBar');
-    const progText = document.getElementById('progressText');
+    const advancedChk = document.getElementById('advancedChk');
+    const advPanel     = document.getElementById('advancedControls');
+    const qInput       = document.getElementById('qualityInput');
+    const qValue       = document.getElementById('qualityVal');
+    const sInput       = document.getElementById('scaleInput');
+    const sValue       = document.getElementById('scaleVal');
+    const expectedSize = document.getElementById('expectedSize');
+    const goBtn        = document.getElementById('goBtn');
+    const output       = document.getElementById('output');
+    const progCont     = document.getElementById('progressContainer');
+    const progBar      = document.getElementById('progressBar');
+    const progText     = document.getElementById('progressText');
 
-    // Show/hide advanced
-    advChk.addEventListener('change', () => {
-      advPanel.style.display = advChk.checked ? 'block' : 'none';
+    let imgEl, canvas, ctx;
+
+    // Show/hide advanced controls
+    advancedChk.addEventListener('change', () => {
+      if (!imgEl) return advancedChk.checked = false, alert('Select an image first');
+      advPanel.style.display = advancedChk.checked ? 'block' : 'none';
+      qInput.disabled = sInput.disabled = !advancedChk.checked;
+      updateExpectedSize();
     });
-    qIn.addEventListener('input', () => qVal.textContent = qIn.value);
-    sIn.addEventListener('input', () => sVal.textContent = sIn.value + '%');
 
-    let imgGlobal, canvas, ctx, lastLink, lastPreview;
+    // Sync slider displays & expected size
+    qInput.addEventListener('input', () => {
+      qValue.textContent = qInput.value;
+      updateExpectedSize();
+    });
+    sInput.addEventListener('input', () => {
+      sValue.textContent = sInput.value + '%';
+      updateExpectedSize();
+    });
 
-    async function render(quality, scalePercent) {
-      const scale = scalePercent / 100;
-      const w = Math.round(imgGlobal.width * scale);
-      const h = Math.round(imgGlobal.height * scale);
+    // Load image into memory
+    document.getElementById('fileInput').addEventListener('change', async () => {
+      const file = document.getElementById('fileInput').files[0];
+      if (!file) return;
+      imgEl = await fileToImage(file);
+      canvas = document.createElement('canvas');
+      ctx = canvas.getContext('2d');
+      expectedSize.textContent = 'Expected size: — KB';
+    });
+
+    // Compute & display expected size without creating link/preview
+    async function updateExpectedSize() {
+      if (!imgEl) return;
+      const q = parseFloat(qInput.value);
+      const scale = parseInt(sInput.value, 10) / 100;
+      const w = Math.round(imgEl.width * scale);
+      const h = Math.round(imgEl.height * scale);
       canvas.width = w; canvas.height = h;
       ctx.clearRect(0, 0, w, h);
-      ctx.drawImage(imgGlobal, 0, 0, w, h);
-      const blob = await canvasToBlob(canvas, 'image/jpeg', quality);
-      const kb = Math.round(blob.size / 1024);
-
-      // update output
-      const url = URL.createObjectURL(blob);
-      if (lastLink) lastLink.remove();
-      if (lastPreview) lastPreview.remove();
-
-      lastLink = document.createElement('a');
-      lastLink.href = url;
-      lastLink.download = `resized-${Date.now()}.jpg`;
-      lastLink.textContent = `✅ Download (${kb} KB)`;
-      output.appendChild(lastLink);
-
-      lastPreview = document.createElement('img');
-      lastPreview.src = url;
-      output.appendChild(lastPreview);
+      ctx.drawImage(imgEl, 0, 0, w, h);
+      const blob = await canvasToBlob(canvas, 'image/jpeg', q);
+      const kb   = Math.round(blob.size / 1024);
+      expectedSize.textContent = `Expected size: ${kb} KB`;
     }
 
+    // Main resize on button click
     goBtn.addEventListener('click', async () => {
       const file = document.getElementById('fileInput').files[0];
       const maxKB = parseInt(document.getElementById('sizeInput').value, 10);
       if (!file || !maxKB) return alert('Select file and max size!');
-
-      imgGlobal = await fileToImage(file);
-      canvas = document.createElement('canvas');
-      ctx = canvas.getContext('2d');
       output.innerHTML = '';
       progCont.style.display = 'block';
       progBar.value = 0;
       progText.textContent = '0%';
 
-      if (!advChk.checked) {
-        // auto-shrink with progress
-        let quality = parseFloat(qIn.value);
-        let w = imgGlobal.width, h = imgGlobal.height, blob;
-        const maxQualitySteps = 20, maxDimSteps = 20;
-        let step = 0, totalSteps = maxQualitySteps + maxDimSteps;
+      // Prepare image and canvas
+      if (!imgEl) imgEl = await fileToImage(file);
+      if (!canvas) {
+        canvas = document.createElement('canvas');
+        ctx = canvas.getContext('2d');
+      }
 
-        // quality loop
-        for (let i = 0; i < maxQualitySteps; i++) {
-          ctx.drawImage(imgGlobal, 0, 0, w, h);
+      let quality = parseFloat(qInput.value);
+      let w = imgEl.width, h = imgEl.height;
+      let blob;
+
+      // If advanced, apply single-step final
+      if (advancedChk.checked) {
+        w = Math.round(w * (parseInt(sInput.value, 10) / 100));
+        h = Math.round(h * (parseInt(sInput.value, 10) / 100));
+        canvas.width = w; canvas.height = h;
+        ctx.clearRect(0, 0, w, h);
+        ctx.drawImage(imgEl, 0, 0, w, h);
+        blob = await canvasToBlob(canvas, 'image/jpeg', quality);
+        progBar.value = progText.textContent = '100%';
+        progCont.style.display = 'none';
+      } else {
+        // auto-shrink loops with progress
+        const maxQualSteps = 20, maxDimSteps = 20;
+        let step = 0, total = maxQualSteps + maxDimSteps;
+
+        // quality reduction
+        for (let i = 0; i < maxQualSteps; i++) {
+          canvas.width = w; canvas.height = h;
+          ctx.drawImage(imgEl, 0, 0, w, h);
           blob = await canvasToBlob(canvas, 'image/jpeg', quality);
           step++;
-          progBar.value = Math.round(step / totalSteps * 100);
+          progBar.value = Math.round(step / total * 100);
           progText.textContent = progBar.value + '%';
           if (blob.size / 1024 <= maxKB) break;
           quality *= 0.9;
         }
 
-        // dimension loop
+        // dimension downscale
         while (blob.size / 1024 > maxKB) {
           w = Math.round(w * 0.9);
           h = Math.round(h * 0.9);
           canvas.width = w; canvas.height = h;
-          ctx.drawImage(imgGlobal, 0, 0, w, h);
+          ctx.drawImage(imgEl, 0, 0, w, h);
           blob = await canvasToBlob(canvas, 'image/jpeg', quality);
           step++;
-          progBar.value = Math.min(Math.round(step / totalSteps * 100), 100);
+          progBar.value = Math.min(Math.round(step / total * 100), 100);
           progText.textContent = progBar.value + '%';
         }
-
-        // done
         progBar.value = 100;
         progText.textContent = '100%';
         progCont.style.display = 'none';
-
-        // show result
-        const url = URL.createObjectURL(blob);
-        lastLink = document.createElement('a');
-        lastLink.href = url;
-        lastLink.download = `resized-${file.name.replace(/\.[^/.]+$/, '')}.jpg`;
-        lastLink.textContent = `✅ Download (${Math.round(blob.size/1024)} KB)`;
-        output.appendChild(lastLink);
-
-        lastPreview = document.createElement('img');
-        lastPreview.src = url;
-        output.appendChild(lastPreview);
-
-      } else {
-        // advanced: initial render, then dynamic
-        await render(parseFloat(qIn.value), parseInt(sIn.value, 10));
-        progCont.style.display = 'none';
-        [qIn, sIn].forEach(el =>
-          el.addEventListener('input', () =>
-            render(parseFloat(qIn.value), parseInt(sIn.value, 10))
-          )
-        );
       }
+
+      // show final download link & preview
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `resized-${file.name.replace(/\.[^/.]+$/, '')}.jpg`;
+      link.textContent = `✅ Download (${Math.round(blob.size/1024)} KB)`;
+      output.appendChild(link);
+
+      const preview = document.createElement('img');
+      preview.src = url;
+      output.appendChild(preview);
     });
   </script>
 </body>
